@@ -21,4 +21,3 @@ plotly
 kaleido
 numpy
 pandas
-gradio
