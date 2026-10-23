@@ -1,13 +1,12 @@
 # =============================================================================
 # AgroEspacio Colombia – Inteligencia Territorial SpVAR
 # Desarrollo Agropecuario · Pobreza Rural · Deforestación
-# Arquitectura OOD | Gradio | PySAL | GeoPandas | Plotly
-# Single-Block Engine – Google Colab ready
+# Arquitectura OOD | Streamlit | PySAL | GeoPandas | Plotly
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 1. INSTALACIÓN
-
+# 1. INSTALACIÓN Y ADVERTENCIAS
+# -----------------------------------------------------------------------------
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -17,22 +16,23 @@ warnings.filterwarnings('ignore')
 import numpy as np
 import pandas as pd
 import geopandas as gpd
-from shapely.geometry import MultiPolygon, Polygon, mapping
+from shapely.geometry import MultiPolygon, Polygon
 from shapely.validation import make_valid
-from shapely.ops import unary_union
 from libpysal.weights import Queen, Rook, KNN, DistanceBand
 from libpysal.weights import lag_spatial
 from esda.moran import Moran, Moran_Local
-from spreg import OLS, ML_Lag, ML_Error, GM_Lag
+from spreg import OLS, ML_Lag
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import gradio as gr
+import streamlit as st
 from sklearn.metrics.pairwise import euclidean_distances
-from io import BytesIO
-import base64
 
-print("✅ Librerías listas")
+# Configuración de página en Streamlit (debe ir antes de renderizar componentes)
+st.set_page_config(
+    page_title="AgroEspacio Colombia",
+    page_icon="🌿",
+    layout="wide"
+)
 
 # =============================================================================
 # 3. SPATIAL DATA ENGINE
@@ -107,11 +107,6 @@ class SpatialDataEngine:
         return self
 
     def integrar_datos(self):
-        """
-        Valores de referencia construidos a partir de publicaciones oficiales
-        DANE (Cuentas Departamentales / IPM) e IDEAM-SMByC (deforestación).
-        No se imputa por mediana: se hace matching exacto por nombre normalizado.
-        """
         vab_data = {
             'ANTIOQUIA': 12.5, 'ATLANTICO': 1.8, 'BOGOTA': 0.9, 'BOLIVAR': 2.4, 'BOYACA': 4.1,
             'CALDAS': 3.2, 'CAQUETA': 1.9, 'CAUCA': 3.8, 'CESAR': 2.7, 'CHOCO': 1.1,
@@ -156,7 +151,6 @@ class SpatialDataEngine:
                         matched = True
                         break
                 if not matched:
-                    # Fallback seguro: valor mínimo observado (nunca mediana)
                     vals.append(min(data.values()))
             return np.array(vals)
 
@@ -176,7 +170,7 @@ class SpatialDataEngine:
 # 4. SPATIAL VAR ENGINE
 # =============================================================================
 class SpatialVAREngine:
-    """Motor econométrico espacial multivariado (SpVAR ecuación por ecuación)."""
+    """Motor econométrico espacial multivariado."""
 
     def __init__(self, gdf):
         self.gdf = gdf.copy()
@@ -187,7 +181,6 @@ class SpatialVAREngine:
         self.lisa = {}
 
     def build_weights(self, w_type='Queen', k=5, dist_pct=30):
-        """Construye matriz W con estandarización por filas."""
         gdf = self.gdf
         if w_type == 'Queen':
             w = Queen.from_dataframe(gdf, silence_warnings=True)
@@ -232,12 +225,6 @@ class SpatialVAREngine:
         return gdf_t
 
     def estimate_spvar(self):
-        """
-        Sistema SpVAR aproximado por ecuaciones espaciales:
-        Para cada endógena y:
-          y = α + Xβ + WXθ + ρ Wy + ε
-        donde X contiene las otras dos endógenas (SDM-style).
-        """
         if self.w is None:
             self.build_weights()
 
@@ -246,15 +233,12 @@ class SpatialVAREngine:
         for dep in vars_endog:
             others = [v for v in vars_endog if v != dep]
             y = self.gdf[dep].values
-            # Covariates: otras endógenas
             X = self.gdf[others].values
-            # Spatial lags de las covariables (SDM)
             WX = np.column_stack([lag_spatial(self.w, self.gdf[v].values) for v in others])
             X_full = np.hstack([X, WX])
             name_x = others + [f'W_{v}' for v in others]
 
             try:
-                # ML_Lag (SAR) con covariables + WX → SDM práctico
                 model = ML_Lag(y, X_full, w=self.w, name_y=dep, name_x=name_x,
                                name_w=self.w_type, name_ds='AgroEspacio')
                 results[dep] = {
@@ -269,7 +253,6 @@ class SpatialVAREngine:
                     'std_err': model.std_err.flatten() if hasattr(model, 'std_err') else None
                 }
             except Exception as e:
-                # Fallback OLS si ML falla
                 model = OLS(y, X_full, name_y=dep, name_x=name_x, name_ds='AgroEspacio')
                 results[dep] = {
                     'model': model,
@@ -321,25 +304,23 @@ class SpatialVAREngine:
                     md.append(f"- Dependencia espacial débil (ρ ≈ {rho:.3f}).")
             else:
                 md.append("- Modelo estimado por OLS (sin ρ espacial).")
-            # Spillover cualitativo
+            
             if dep == 'ln_VAB':
-                md.append("- El desarrollo agropecuario genera **spillovers positivos** hacia departamentos vecinos (efecto de derrame productivo).")
+                md.append("- El desarrollo agropecuario genera **spillovers positivos** hacia departamentos vecinos.")
             elif dep == 'ln_IPM':
-                md.append("- La pobreza rural muestra fuerte estructuración espacial → las políticas deben ser territoriales y de clúster.")
+                md.append("- La pobreza rural muestra fuerte estructuración espacial → las políticas deben ser territoriales.")
             else:
-                md.append("- La deforestación se propaga espacialmente; la contención requiere coordinación interdepartamental.")
+                md.append("- La deforestación se propaga espacialmente; requiere coordinación interdepartamental.")
             md.append("")
         md.append("#### Recomendación de política pública")
-        md.append("- Priorizar **hotspots HH** de pobreza + deforestación (Caquetá, Meta, Guaviare, Chocó, Putumayo) con paquetes integrados: incentivos productivos + control de deforestación + transferencias condicionadas.")
-        md.append("- Aprovechar los spillovers del VAB agropecuario: invertir en un departamento genera beneficios en los contiguos.")
+        md.append("- Priorizar **hotspots HH** de pobreza + deforestación (Caquetá, Meta, Guaviare, Chocó, Putumayo).")
+        md.append("- Aprovechar los spillovers del VAB agropecuario entre departamentos contiguos.")
         return "\n".join(md)
 
 # =============================================================================
 # 5. VISUAL ENGINE
 # =============================================================================
 class VisualEngine:
-    """Genera todas las visualizaciones Plotly de alto contraste."""
-
     def __init__(self, gdf):
         self.gdf = gdf
         self.gdf_geo = gdf.to_crs(epsg=4326)
@@ -380,17 +361,10 @@ class VisualEngine:
         return fig
 
     def extrusion_3d(self, variable='ln_IPM', height_scale=8.0):
-        """
-        Extrusión 3D de los polígonos reales.
-        Cada departamento se eleva proporcionalmente al valor de la variable.
-        """
         gdf = self.gdf_geo.copy()
         vals = gdf[variable].values
         vmin, vmax = vals.min(), vals.max()
-        if vmax - vmin < 1e-9:
-            heights = np.ones(len(gdf)) * 0.5
-        else:
-            heights = height_scale * (vals - vmin) / (vmax - vmin)
+        heights = np.ones(len(gdf)) * 0.5 if vmax - vmin < 1e-9 else height_scale * (vals - vmin) / (vmax - vmin)
 
         fig = go.Figure()
         colorscale = px.colors.sequential.OrRd if 'IPM' in variable or 'DEF' in variable else px.colors.sequential.YlGn
@@ -398,45 +372,31 @@ class VisualEngine:
         for idx, row in gdf.iterrows():
             geom = row.geometry
             h = heights[idx]
-            if geom.geom_type == 'MultiPolygon':
-                polys = list(geom.geoms)
-            else:
-                polys = [geom]
+            polys = list(geom.geoms) if geom.geom_type == 'MultiPolygon' else [geom]
             for poly in polys:
-                if poly.is_empty:
-                    continue
-                # Exterior
+                if poly.is_empty: continue
                 xs, ys = poly.exterior.xy
-                # Base (z=0) + techo (z=h)
-                # Creamos un mesh simple por extrusión de la silueta
                 n = len(xs)
-                # Puntos base y techo
                 x = list(xs) + list(xs)
                 y = list(ys) + list(ys)
                 z = [0]*n + [h]*n
-                # Caras laterales + techo
                 i, j, k = [], [], []
-                # Techo
                 for t in range(1, n-1):
                     i.append(n); j.append(n+t); k.append(n+t+1)
-                # Laterales
                 for t in range(n-1):
                     i.extend([t, t, t+1])
                     j.extend([t+1, n+t, n+t])
                     k.extend([n+t, n+t+1, n+t+1])
                 color_val = (vals[idx] - vmin) / (vmax - vmin + 1e-9)
                 fig.add_trace(go.Mesh3d(
-                    x=x, y=y, z=z,
-                    i=i, j=j, k=k,
+                    x=x, y=y, z=z, i=i, j=j, k=k,
                     intensity=[color_val]*(2*n),
                     colorscale=colorscale,
-                    showscale=False,
-                    opacity=0.85,
+                    showscale=False, opacity=0.85,
                     name=row['NOM_DEP'],
                     hoverinfo='text',
                     text=f"{row['NOM_DEP']}<br>{variable}: {vals[idx]:.2f}"
                 ))
-                # Contorno de la base
                 fig.add_trace(go.Scatter3d(
                     x=list(xs)+[xs[0]], y=list(ys)+[ys[0]], z=[0]*(n+1),
                     mode='lines', line=dict(color='#0F172A', width=1.5),
@@ -447,14 +407,11 @@ class VisualEngine:
             title=f'Extrusión 3D – {variable} (altura proporcional al valor)',
             scene=dict(
                 xaxis_title='Longitud', yaxis_title='Latitud', zaxis_title=variable,
-                aspectmode='manual',
-                aspectratio=dict(x=1, y=1.2, z=0.45),
+                aspectmode='manual', aspectratio=dict(x=1, y=1.2, z=0.45),
                 camera=dict(eye=dict(x=1.4, y=1.4, z=0.9)),
                 bgcolor='#F4F6F8'
             ),
-            height=650,
-            paper_bgcolor='#F4F6F8',
-            font=dict(color='#0F172A'),
+            height=650, paper_bgcolor='#F4F6F8', font=dict(color='#0F172A'),
             margin=dict(l=0, r=0, t=50, b=0)
         )
         return fig
@@ -481,172 +438,118 @@ class VisualEngine:
         )
         fig.update_layout(
             margin=dict(r=0, t=45, l=0, b=0),
-            height=580,
-            paper_bgcolor='#F4F6F8',
-            font=dict(color='#0F172A')
+            height=580, paper_bgcolor='#F4F6F8', font=dict(color='#0F172A')
         )
         return fig
 
 # =============================================================================
-# 6. INICIALIZACIÓN GLOBAL
+# 6. INICIALIZACIÓN CON CACHÉ DE STREAMLIT
 # =============================================================================
-print("Cargando y saneando datos espaciales...")
-data_engine = SpatialDataEngine().cargar_y_sanear().integrar_datos()
-gdf_base = data_engine.get_gdf()
-print(f"✅ {len(gdf_base)} departamentos listos | CRS: EPSG:9377")
-
-var_engine = SpatialVAREngine(gdf_base)
-var_engine.build_weights('Queen')
-var_engine.compute_moran()
-visual = VisualEngine(gdf_base)
-
-# =============================================================================
-# 7. FUNCIONES DE INTERFAZ (callbacks Gradio)
-# =============================================================================
-def update_choropleth(variable):
-    return visual.choropleth(variable)
-
-def update_3d(variable):
-    return visual.extrusion_3d(variable)
-
-def update_lisa(variable, w_type, k, dist_pct):
-    var_engine.build_weights(w_type, k=k, dist_pct=dist_pct)
-    gdf_lisa = var_engine.compute_lisa(variable)
-    return visual.lisa_map(gdf_lisa, variable)
-
-def run_spvar(w_type, k, dist_pct):
-    var_engine.build_weights(w_type, k=k, dist_pct=dist_pct)
+@st.cache_resource
+def load_data_and_engines():
+    data_engine = SpatialDataEngine().cargar_y_sanear().integrar_datos()
+    gdf_base = data_engine.get_gdf()
+    var_engine = SpatialVAREngine(gdf_base)
+    var_engine.build_weights('Queen')
     var_engine.compute_moran()
-    var_engine.estimate_spvar()
-    table = var_engine.summary_table()
-    report = var_engine.interpretability_report()
-    return table, report
+    visual = VisualEngine(gdf_base)
+    return gdf_base, var_engine, visual
+
+gdf_base, var_engine, visual = load_data_and_engines()
 
 # =============================================================================
-# 8. INTERFAZ GRADIO – ALTO CONTRASTE
+# 7. INTERFAZ STREAMLIT
 # =============================================================================
-custom_css = """
-.gradio-container {max-width: 1280px !important; background-color: #F4F6F8 !important;}
-h1, h2, h3 {color: #0F172A !important; font-weight: 700 !important;}
-.tab-nav button {font-size: 14.5px !important; color: #0F172A !important;}
-.tab-nav button.selected {background-color: #2563EB !important; color: white !important;}
-button.primary {background-color: #2563EB !important; color: white !important;}
-.dataframe {font-size: 13px !important;}
-"""
+st.title("🌿 AgroEspacio Colombia")
+st.subheader("Inteligencia Territorial · Sistema Vector Autorregresivo Espacial (SpVAR)")
+st.markdown("**Desarrollo Agropecuario · Pobreza Rural · Deforestación**")
 
-with gr.Blocks(
-    title="AgroEspacio Colombia – Inteligencia Territorial SpVAR",
-    theme=gr.themes.Soft(primary_hue="blue", secondary_hue="slate", neutral_hue="slate"),
-    css=custom_css
-) as demo:
+tabs = st.tabs([
+    "🗺️ Mapas Coropléticos", 
+    "🌐 Extrusión 3D", 
+    "🔥 Clusters LISA", 
+    "📊 Estimación SpVAR", 
+    "ℹ️ Acerca de / Fuentes"
+])
 
-    gr.Markdown("""
-    # 🌿 AgroEspacio Colombia
-    ### Inteligencia Territorial · Sistema Vector Autorregresivo Espacial (SpVAR)
-    **Desarrollo Agropecuario · Pobreza Rural · Deforestación**
-    Plataforma de análisis espacial de alto impacto para tomadores de decisión e investigadores.
+# ---- TAB 1: Mapas Coropléticos ----
+with tabs[0]:
+    st.markdown("### Visualización coroplética de alto contraste")
+    var_c = st.radio(
+        "Seleccione la Variable:",
+        ['IPM_RURAL', 'VAB_AGRO', 'DEFOREST_HA', 'ln_IPM', 'ln_VAB', 'ln_DEF'],
+        horizontal=True
+    )
+    fig_c = visual.choropleth(var_c)
+    st.plotly_chart(fig_c, use_container_width=True)
+
+# ---- TAB 2: Extrusión 3D ----
+with tabs[1]:
+    st.markdown("### Extrusión tridimensional sobre la geometría real")
+    var_3d = st.radio(
+        "Variable de extrusión:",
+        ['ln_IPM', 'ln_VAB', 'ln_DEF', 'IPM_RURAL', 'VAB_AGRO', 'DEFOREST_HA'],
+        horizontal=True
+    )
+    fig_3d = visual.extrusion_3d(var_3d)
+    st.plotly_chart(fig_3d, use_container_width=True)
+
+# ---- TAB 3: LISA ----
+with tabs[2]:
+    st.markdown("### Autocorrelación Espacial Local (LISA)")
+    col1, col2 = st.columns(2)
+    with col1:
+        lisa_var = st.radio("Variable LISA:", ['ln_IPM', 'ln_DEF', 'ln_VAB'], horizontal=True)
+        lisa_w = st.radio("Matriz de pesos W:", ['Queen', 'Rook', 'KNN', 'DistanceBand'], horizontal=True)
+    with col2:
+        lisa_k = st.slider("k vecinos (solo KNN):", 3, 12, 5)
+        lisa_dist = st.slider("% percentil distancia (DistanceBand):", 15, 50, 30)
+
+    var_engine.build_weights(lisa_w, k=lisa_k, dist_pct=lisa_dist)
+    gdf_lisa = var_engine.compute_lisa(lisa_var)
+    fig_lisa = visual.lisa_map(gdf_lisa, lisa_var)
+    st.plotly_chart(fig_lisa, use_container_width=True)
+
+# ---- TAB 4: SpVAR ----
+with tabs[3]:
+    st.markdown("### Sistema Vector Autorregresivo Espacial (SpVAR)")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        sp_w = st.selectbox("Matriz de pesos (W):", ['Queen', 'Rook', 'KNN', 'DistanceBand'])
+    with col2:
+        sp_k = st.slider("k vecinos (KNN):", 3, 12, 5, key="sp_k")
+    with col3:
+        sp_dist = st.slider("% percentil (DistanceBand):", 15, 50, 30, key="sp_dist")
+
+    if st.button("🚀 Estimar Sistema SpVAR", type="primary"):
+        var_engine.build_weights(sp_w, k=sp_k, dist_pct=sp_dist)
+        var_engine.compute_moran()
+        var_engine.estimate_spvar()
+        
+        st.dataframe(var_engine.summary_table(), use_container_width=True)
+        st.markdown(var_engine.interpretability_report())
+
+# ---- TAB 5: Acerca de ----
+with tabs[4]:
+    st.markdown("""
+    ### Ficha Técnica y Transparencia
+
+    | Elemento | Detalle |
+    |----------|---------|
+    | Nivel de análisis | Departamental (32 deptos, San Andrés excluido) |
+    | CRS | MAGNA-SIRGAS Origen Nacional (EPSG:9377) |
+    | Matriz W | Queen / Rook / KNN / DistanceBand (row-standardized) |
+    | Modelos | spreg.ML_Lag (SDM-style) + fallback OLS |
+    | Autocorrelación | Moran’s I global + LISA local (999 permutaciones) |
+
+    #### Fuentes oficiales de referencia
+    - **Cartografía**: MGN – DANE
+    - **VAB Agrícola**: DANE – Cuentas Departamentales (órdenes de magnitud)
+    - **IPM Rural**: DANE – Boletines IPM 2024-2025 (centros poblados y rural disperso)
+    - **Deforestación**: IDEAM – SMByC (Informes de monitoreo 2024-2025)
+
+    **Nota metodológica**: Los valores numéricos de VAB, IPM y Deforestación son de referencia construidos a partir de publicaciones oficiales. El motor SpVAR estima un sistema de ecuaciones espaciales con lags de las variables endógenas.
+    
+    ---
+    *AgroEspacio Colombia – Inteligencia Territorial de Alto Impacto*
     """)
-
-    with gr.Tabs():
-
-        # ---- TAB 1: Mapas Coropléticos ----
-        with gr.Tab("🗺️ Mapas Coropléticos"):
-            gr.Markdown("### Visualización coroplética de alto contraste (Carto-Positron)")
-            var_c = gr.Radio(
-                choices=['VAB_AGRO', 'IPM_RURAL', 'DEFOREST_HA', 'ln_VAB', 'ln_IPM', 'ln_DEF'],
-                value='IPM_RURAL',
-                label="Variable"
-            )
-            mapa_c = gr.Plot()
-            var_c.change(fn=update_choropleth, inputs=var_c, outputs=mapa_c)
-            demo.load(fn=lambda: update_choropleth('IPM_RURAL'), outputs=mapa_c)
-
-        # ---- TAB 2: Extrusión 3D ----
-        with gr.Tab("🌐 Extrusión 3D (Shape Real)"):
-            gr.Markdown("""
-            ### Extrusión tridimensional sobre la geometría real de los departamentos
-            La altura de cada polígono es proporcional al valor de la variable seleccionada.
-            Rota y haz zoom para explorar la estructura espacial.
-            """)
-            var_3d = gr.Radio(
-                choices=['ln_VAB', 'ln_IPM', 'ln_DEF', 'VAB_AGRO', 'IPM_RURAL', 'DEFOREST_HA'],
-                value='ln_IPM',
-                label="Variable de extrusión"
-            )
-            plot_3d = gr.Plot()
-            var_3d.change(fn=update_3d, inputs=var_3d, outputs=plot_3d)
-            demo.load(fn=lambda: update_3d('ln_IPM'), outputs=plot_3d)
-
-        # ---- TAB 3: LISA ----
-        with gr.Tab("🔥 Clusters LISA"):
-            gr.Markdown("""
-            ### Autocorrelación Espacial Local (LISA)
-            - **Rojo (HH)**: Hotspot – alto valor rodeado de altos valores
-            - **Azul (LL)**: Coldspot – bajo valor rodeado de bajos valores
-            - **Amarillo (HL) / Celeste (LH)**: Outliers espaciales
-            """)
-            with gr.Row():
-                lisa_var = gr.Radio(
-                    choices=['ln_IPM', 'ln_DEF', 'ln_VAB'],
-                    value='ln_IPM',
-                    label="Variable LISA"
-                )
-                lisa_w = gr.Radio(
-                    choices=['Queen', 'Rook', 'KNN', 'DistanceBand'],
-                    value='Queen',
-                    label="Tipo de matriz W"
-                )
-            with gr.Row():
-                lisa_k = gr.Slider(3, 12, value=5, step=1, label="k vecinos (solo KNN)")
-                lisa_dist = gr.Slider(15, 50, value=30, step=5, label="% percentil distancia (DistanceBand)")
-            lisa_plot = gr.Plot()
-            btn_lisa = gr.Button("Actualizar LISA", variant="primary")
-            btn_lisa.click(fn=update_lisa, inputs=[lisa_var, lisa_w, lisa_k, lisa_dist], outputs=lisa_plot)
-            demo.load(fn=lambda: update_lisa('ln_IPM', 'Queen', 5, 30), outputs=lisa_plot)
-
-        # ---- TAB 4: SpVAR ----
-        with gr.Tab("📊 Estimación SpVAR"):
-            gr.Markdown("""
-            ### Sistema Vector Autorregresivo Espacial (SpVAR)
-            Estimación ecuación por ecuación con lags espaciales de las endógenas (SDM-style).
-            Seleccione la matriz de pesos espaciales y ejecute.
-            """)
-            with gr.Row():
-                sp_w = gr.Radio(
-                    choices=['Queen', 'Rook', 'KNN', 'DistanceBand'],
-                    value='Queen',
-                    label="Matriz de pesos espaciales (W)"
-                )
-                sp_k = gr.Slider(3, 12, value=5, step=1, label="k vecinos (KNN)")
-                sp_dist = gr.Slider(15, 50, value=30, step=5, label="% percentil (DistanceBand)")
-            btn_sp = gr.Button("🚀 Estimar Sistema SpVAR", variant="primary")
-            tabla_sp = gr.DataFrame(label="Resumen de modelos (AIC · R² · σ² · ρ)")
-            reporte_sp = gr.Markdown()
-            btn_sp.click(fn=run_spvar, inputs=[sp_w, sp_k, sp_dist], outputs=[tabla_sp, reporte_sp])
-            # Carga inicial
-            demo.load(fn=lambda: run_spvar('Queen', 5, 30), outputs=[tabla_sp, reporte_sp])
-
-        # ---- TAB 5: Acerca de ----
-        with gr.Tab("ℹ️ Acerca de / Fuentes"):
-            gr.Markdown("""
-            ### Ficha Técnica y Transparencia
-
-            | Elemento | Detalle |
-            |----------|---------|
-            | Nivel de análisis | Departamental (32 deptos, San Andrés excluido) |
-            | CRS | MAGNA-SIRGAS Origen Nacional (EPSG:9377) |
-            | Matriz W | Queen / Rook / KNN / DistanceBand (row-standardized) |
-            | Modelos | spreg.ML_Lag (SDM-style) + fallback OLS |
-            | Autocorrelación | Moran’s I global + LISA local (999 permutaciones) |
-
-            #### Fuentes oficiales de referencia
-            - **Cartografía**: MGN – DANE
-            - **VAB Agrícola**: DANE – Cuentas Departamentales (órdenes de magnitud)
-            - **IPM Rural**: DANE – Boletines IPM 2024-2025 (centros poblados y rural disperso)
-            - **Deforestación**: IDEAM – SMByC (Informes de monitoreo 2024-2025)
-
-            **Nota metodológica**: Los valores numéricos de VAB, IPM y Deforestación son de referencia construidos a partir de las publicaciones oficiales más recientes disponibles públicamente. La geometría es oficial. El motor SpVAR estima un sistema de ecuaciones espaciales con lags de las variables endógenas (aproximación SDM multivariada).
-
-            ---
-            *AgroEspacio Colombia – Inteligencia Territorial de Alto Impacto*
-            """)
