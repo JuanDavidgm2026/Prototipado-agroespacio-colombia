@@ -320,6 +320,8 @@ class SpatialVAREngine:
 # =============================================================================
 # 5. VISUAL ENGINE
 # =============================================================================
+import json
+
 class VisualEngine:
     def __init__(self, gdf):
         self.gdf = gdf
@@ -336,9 +338,13 @@ class VisualEngine:
             'DEFOREST_HA': 'Pérdida de bosque natural (ha) – ref. IDEAM SMByC',
             'ln_VAB': 'ln(VAB Agropecuario)', 'ln_IPM': 'ln(IPM Rural)', 'ln_DEF': 'ln(Deforestación)'
         }
+        
+        # Convertir el GeoDataFrame a formato GeoJSON dict directo
+        geojson_data = json.loads(self.gdf_geo.to_json())
+
         fig = px.choropleth_mapbox(
             self.gdf_geo,
-            geojson=self.gdf_geo.__geo_interface__,
+            geojson=geojson_data,
             locations=self.gdf_geo.index,
             color=variable,
             hover_name='NOM_DEP',
@@ -417,9 +423,10 @@ class VisualEngine:
         return fig
 
     def lisa_map(self, gdf_lisa, variable):
+        geojson_data = json.loads(gdf_lisa.to_crs(epsg=4326).to_json())
         fig = px.choropleth_mapbox(
             gdf_lisa.to_crs(epsg=4326),
-            geojson=gdf_lisa.to_crs(epsg=4326).__geo_interface__,
+            geojson=geojson_data,
             locations=gdf_lisa.index,
             color='tipo',
             hover_name='NOM_DEP',
