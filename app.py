@@ -650,3 +650,4 @@ with gr.Blocks(
             ---
             *AgroEspacio Colombia – Inteligencia Territorial de Alto Impacto*
             """)
+demo.launch()
