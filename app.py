@@ -318,7 +318,7 @@ class SpatialVAREngine:
         return "\n".join(md)
 
 # =============================================================================
-# 5. VISUAL ENGINE
+# 5. VISUAL ENGINE 
 # =============================================================================
 import json
 
@@ -339,18 +339,21 @@ class VisualEngine:
             'ln_VAB': 'ln(VAB Agropecuario)', 'ln_IPM': 'ln(IPM Rural)', 'ln_DEF': 'ln(Deforestación)'
         }
         
-        # Convertir el GeoDataFrame a formato GeoJSON dict directo
-        geojson_data = json.loads(self.gdf_geo.to_json())
+        # Copiamos el GDF y asignamos un ID explícito como columna de texto
+        gdf_temp = self.gdf_geo.copy()
+        gdf_temp['id_feature'] = gdf_temp.index.astype(str)
+        geojson_data = json.loads(gdf_temp.to_json())
 
-        fig = px.choropleth_mapbox(
-            self.gdf_geo,
+        fig = px.choropleth_map(
+            gdf_temp,
             geojson=geojson_data,
-            locations=self.gdf_geo.index,
+            locations='id_feature',
+            featureidkey='properties.id_feature',
             color=variable,
             hover_name='NOM_DEP',
-            hover_data={variable: ':.2f', 'AREA_KM2': ':.0f'},
+            hover_data={variable: ':.2f', 'AREA_KM2': ':.0f', 'id_feature': False},
             color_continuous_scale=color_scale.get(variable, 'Viridis'),
-            mapbox_style='carto-positron',
+            map_style='carto-positron',
             zoom=4.6,
             center={"lat": 4.5, "lon": -73.0},
             opacity=0.82,
@@ -423,11 +426,15 @@ class VisualEngine:
         return fig
 
     def lisa_map(self, gdf_lisa, variable):
-        geojson_data = json.loads(gdf_lisa.to_crs(epsg=4326).to_json())
-        fig = px.choropleth_mapbox(
-            gdf_lisa.to_crs(epsg=4326),
+        gdf_temp = gdf_lisa.to_crs(epsg=4326).copy()
+        gdf_temp['id_feature'] = gdf_temp.index.astype(str)
+        geojson_data = json.loads(gdf_temp.to_json())
+
+        fig = px.choropleth_map(
+            gdf_temp,
             geojson=geojson_data,
-            locations=gdf_lisa.index,
+            locations='id_feature',
+            featureidkey='properties.id_feature',
             color='tipo',
             hover_name='NOM_DEP',
             color_discrete_map={
@@ -437,7 +444,7 @@ class VisualEngine:
                 'HL': '#fbbf24',
                 'No significativo': '#d1d5db'
             },
-            mapbox_style='carto-positron',
+            map_style='carto-positron',
             zoom=4.6,
             center={"lat": 4.5, "lon": -73.0},
             opacity=0.85,
@@ -448,7 +455,6 @@ class VisualEngine:
             height=580, paper_bgcolor='#F4F6F8', font=dict(color='#0F172A')
         )
         return fig
-
 # =============================================================================
 # 6. INICIALIZACIÓN CON CACHÉ DE STREAMLIT
 # =============================================================================
